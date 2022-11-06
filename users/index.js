@@ -2,20 +2,33 @@ const express = require('express')
 const app = express();
 const bodyParser = require('body-parser')
 const amqplib = require('amqplib');
-const { getQueueChannel } = require('./queues');
-const { events, QUEUE_NAME } = require("./lib");
-const storageService = require("./services/storage")
+const { events, queues, CONNECTION } = require("./lib");
+
+let connection = null;
 
 app.use(bodyParser.json()) 
 
-const listenEvents = async (channel) => {
+const updateUserStorage = async (slide) => {
+  const output = {
+    event: events.STORAGE_UPDATE,
+    body: slide,
+  }
+  const channel = await connection.createChannel();
+  await channel.sendToQueue(queues.SLIDES, Buffer.from(JSON.stringify(output)));
+  console.log(4, 'storage updated');
+};
+
+
+const listenEvents = async () => {
   try {
-    await channel.consume(QUEUE_NAME, (message) => {
+    const channel = await connection.createChannel();
+    await channel.consume(queues.USERS, (message) => {
+      // console.log('users: Lisenting event');
       const { event, body } = JSON.parse(message.content.toString()) || {};
       if (event === events.PROCESS_COMPLETED) {
-        storageService.update(body, channel);
+        updateUserStorage(body);
+        channel.ack(message);
       }
-      // channel.ack(message);
     });
   } catch (err) {
     console.log(err);
@@ -23,8 +36,10 @@ const listenEvents = async (channel) => {
 };
 
 app.listen(8000, async() => {
-  const connection = await amqplib.connect('amqp://localhost:5672');
-  const channel = await connection.createChannel();
-  await channel.assertQueue(QUEUE_NAME);
-  listenEvents(channel);
+  try {
+    connection = await amqplib.connect(CONNECTION);
+    listenEvents();
+  } catch (err) {
+    console.log(err);
+  }
 });

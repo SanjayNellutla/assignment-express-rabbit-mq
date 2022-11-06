@@ -2,19 +2,44 @@ const express = require('express')
 const app = express();
 const bodyParser = require('body-parser')
 const amqplib = require('amqplib');
-const { events, QUEUE_NAME } = require("./lib");
-const processService = require("./services/process");
+const { events, queues, CONNECTION } = require("./lib");
+let connection = null;
 
-app.use(bodyParser.json()) 
+app.use(bodyParser.json())
 
-const listenEvents = async (channel) => {
+const onProcessComplete = async (slide) => {
+  const channel = await connection.createChannel();
+  const output = {
+    event: events.PROCESS_COMPLETED,
+    body: slide,
+  }
+  setTimeout(() => {
+    channel.sendToQueue(queues.USERS, Buffer.from(JSON.stringify(output)));
+    console.log(3, 'procesing completed');
+  }, 10000)
+}
+
+const process = async (slide) => {
+  const channel = await connection.createChannel();
+  const output = {
+    event: events.PROCESS_STARTED,
+    body: slide,
+  }
+  await channel.sendToQueue(queues.SLIDES, Buffer.from(JSON.stringify(output)));
+  console.log(2, 'procesing started');
+  onProcessComplete(slide);
+};
+
+const listenEvents = async () => {
   try {
-   await channel.consume(QUEUE_NAME, (message) => {
+   const channel = await connection.createChannel();
+   await channel.consume(queues.PROCESS, (message) => {
+      // console.log('process: Lisenting event');
       const { event, body } = JSON.parse(message.content.toString()) || {};
       if (event === events.SLIDE_CREATED) {
-        processService.process(body, channel);
+        channel.ack(message);
+        process(body)
       }
-      // channel.ack(message);
     });
   } catch (err) {
     console.log(err);
@@ -22,8 +47,6 @@ const listenEvents = async (channel) => {
 };
 
 app.listen(4000, async () => {
-  const connection = await amqplib.connect('amqp://localhost:5672');
-  const channel = await connection.createChannel();
-  await channel.assertQueue(QUEUE_NAME);
-  await listenEvents(channel);
+  connection = await amqplib.connect(CONNECTION);
+  await listenEvents();
 });

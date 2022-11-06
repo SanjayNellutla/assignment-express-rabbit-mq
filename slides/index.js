@@ -2,39 +2,50 @@ const express = require('express')
 const app = express();
 const bodyParser = require('body-parser')
 const amqplib = require('amqplib');
-const { getQueueChannel } = require('./queues');
-const { events, QUEUE_NAME } = require("./lib");
+const { events, queues } = require("./lib");
+let connection = null;
 // const processService = require("./services/process");
 
 app.use(bodyParser.json()) 
 
-const initApp = (channel) => {
-  app.post('/create', async (req, res) => {
-    const { body } = req;
-    try {
-      channel.sendToQueue(QUEUE_NAME, Buffer.from(JSON.stringify({
-        event: events.SLIDE_CREATED,
-        body,
-      })));
-      console.log(1, 'slide record created');
-      res.status(200).send(body)
-    } catch (err) {
-      console.log(err);
-      res.status(500).send(err)
-    }
+const handleCreate = async ({ req, res }) => {
+  const { body } = req;
+  try {
+    const channel = await connection.createChannel();
+    await channel.sendToQueue(queues.PROCESS, Buffer.from(JSON.stringify({
+      event: events.SLIDE_CREATED,
+      body: {
+        ...body,
+        uuid: Math.random() * 7,
+      },
+    })));
+    console.log(1, 'slide record created');
+    res.status(200).send(body)
+  } catch (err) {
+    console.log(err);
+    res.status(500).send(err)
+  }
+}
+
+const initRoutes = () => {
+  app.post('/create', (req, res) => {
+    handleCreate({req, res})
   })
 };
 
-const listenEvents = async (channel) => {
+const listenEvents = async () => {
   try {
-    await channel.consume(QUEUE_NAME, (message) => {
+    const channel = await connection.createChannel();
+    await channel.consume(queues.SLIDES, (message) => {
+      // console.log('slides: Lisenting event');
       const { event } = JSON.parse(message.content.toString()) || {};
       if (event === events.STORAGE_UPDATE) {
-        console.log(4, "Update slide data after process completion");
+        console.log(5, "Update slide data after process completion");
+        channel.ack(message);
       } else if (event === events.STORAGE_UPDATE_FAIL) {
-        console.log(4, "Update slide data after process failure");
+        // console.log(4, "Update slide data after process failure");
+        // channel.ack(message);
       }
-      // channel.ack(message);
     });
     return true;
   } catch (err) {
@@ -43,9 +54,11 @@ const listenEvents = async (channel) => {
 };
 
 app.listen(3000, async () => {
-  const connection = await amqplib.connect('amqp://localhost:5672');
-  const channel = await connection.createChannel();
-  await channel.assertQueue(QUEUE_NAME);
-  await listenEvents(channel);
-  initApp(channel);
+  try {
+    connection = await amqplib.connect('amqp://localhost:5672');
+    listenEvents();
+    initRoutes();
+  } catch (err) {
+    console.log(err);
+  }
 });
